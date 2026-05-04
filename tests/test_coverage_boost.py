@@ -1,6 +1,11 @@
 import os
+import sqlite3
 import threading
 import time
+import uuid
+
+os.environ.setdefault("NOT_MY_KEY", "test-only-encryption-secret")
+
 import requests
 from http.server import HTTPServer
 from main import MyServer, hostName, serverPort, init_db, seed_keys, DB_FILE
@@ -45,6 +50,52 @@ def test_auth_valid():
     r = requests.post("http://localhost:8080/auth")
     assert r.status_code == 200
     assert len(r.text.split(".")) == 3
+
+
+def test_register_endpoint_and_auth_log():
+    username = f"user-{uuid.uuid4()}"
+    email = f"{username}@example.com"
+    register_response = requests.post(
+        "http://localhost:8080/register",
+        json={"username": username, "email": email}
+    )
+    assert register_response.status_code == 201
+    assert uuid.UUID(register_response.json()["password"])
+
+    auth_response = requests.post(
+        "http://localhost:8080/auth",
+        json={"username": username}
+    )
+    assert auth_response.status_code == 200
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT auth_logs.id
+        FROM auth_logs
+        JOIN users ON users.id = auth_logs.user_id
+        WHERE users.username = ?
+    """, (username,))
+    row = cursor.fetchone()
+    conn.close()
+
+    assert row is not None
+
+
+def test_register_duplicate_username_clean_error():
+    username = f"user-{uuid.uuid4()}"
+    first_response = requests.post(
+        "http://localhost:8080/register",
+        json={"username": username, "email": f"{username}@example.com"}
+    )
+    duplicate_response = requests.post(
+        "http://localhost:8080/register",
+        json={"username": username, "email": f"{username}-2@example.com"}
+    )
+
+    assert first_response.status_code == 201
+    assert duplicate_response.status_code == 409
+    assert "username" in duplicate_response.json()["error"]
 
 
 def test_auth_expired():
